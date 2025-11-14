@@ -19,6 +19,7 @@ import os from 'os';
 import {createEmailMessage, createEmailWithNodemailer} from "./utl.js";
 import { createLabel, updateLabel, deleteLabel, listLabels, findLabelByName, getOrCreateLabel, GmailLabel } from "./label-manager.js";
 import { createFilter, listFilters, getFilter, deleteFilter, filterTemplates, GmailFilterCriteria, GmailFilterAction } from "./filter-manager.js";
+import { getThreadHeaders } from "./utils/threading.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -199,8 +200,7 @@ const SendEmailSchema = z.object({
     mimeType: z.enum(['text/plain', 'text/html', 'multipart/alternative']).optional().default('text/plain').describe("Email content type"),
     cc: z.array(z.string()).optional().describe("List of CC recipients"),
     bcc: z.array(z.string()).optional().describe("List of BCC recipients"),
-    threadId: z.string().optional().describe("Thread ID to reply to"),
-    inReplyTo: z.string().optional().describe("Message ID being replied to"),
+    threadId: z.string().optional().describe("Thread ID to reply to (enables proper RFC 2822 threading with In-Reply-To and References headers)"),
     attachments: z.array(z.string()).optional().describe("List of file paths to attach to the email"),
 });
 
@@ -446,12 +446,33 @@ async function main() {
 
         async function handleEmailAction(action: "send" | "draft", validatedArgs: any) {
             let message: string;
-            
+            let replyToMessageId: string | undefined;
+            let existingReferences: string | undefined;
+
+            // If replying to a thread, fetch Message-ID and References headers
+            if (validatedArgs.threadId) {
+                try {
+                    const threadHeaders = await getThreadHeaders(gmail, validatedArgs.threadId);
+                    if (threadHeaders) {
+                        replyToMessageId = threadHeaders.messageId;
+                        existingReferences = threadHeaders.references;
+
+                        // Use original subject if not explicitly provided
+                        if (!validatedArgs.subject && threadHeaders.subject) {
+                            validatedArgs.subject = threadHeaders.subject;
+                        }
+                    }
+                } catch (error: any) {
+                    // Log warning but continue without threading headers
+                    console.warn('Failed to retrieve threading headers, email will be sent with threadId only:', error.message);
+                }
+            }
+
             try {
                 // Check if we have attachments
                 if (validatedArgs.attachments && validatedArgs.attachments.length > 0) {
                     // Use Nodemailer to create properly formatted RFC822 message
-                    message = await createEmailWithNodemailer(validatedArgs);
+                    message = await createEmailWithNodemailer(validatedArgs, replyToMessageId, existingReferences);
                     
                     if (action === "send") {
                         const encodedMessage = Buffer.from(message).toString('base64')
@@ -467,11 +488,15 @@ async function main() {
                             }
                         });
                         
+                        const threadingInfo = replyToMessageId
+                            ? `\nThread ID: ${result.data.threadId}\nIn-Reply-To: ${replyToMessageId}${existingReferences ? `\nReferences: ${existingReferences}` : ''}`
+                            : '';
+
                         return {
                             content: [
                                 {
                                     type: "text",
-                                    text: `Email sent successfully with ID: ${result.data.id}`,
+                                    text: `Email sent successfully with ID: ${result.data.id}${threadingInfo}`,
                                 },
                             ],
                         };
@@ -504,7 +529,7 @@ async function main() {
                     }
                 } else {
                     // For emails without attachments, use the existing simple method
-                    message = createEmailMessage(validatedArgs);
+                    message = createEmailMessage(validatedArgs, replyToMessageId, existingReferences);
                     
                     const encodedMessage = Buffer.from(message).toString('base64')
                         .replace(/\+/g, '-')
@@ -531,11 +556,16 @@ async function main() {
                             userId: 'me',
                             requestBody: messageRequest,
                         });
+
+                        const threadingInfo = replyToMessageId
+                            ? `\nThread ID: ${response.data.threadId}\nIn-Reply-To: ${replyToMessageId}${existingReferences ? `\nReferences: ${existingReferences}` : ''}`
+                            : '';
+
                         return {
                             content: [
                                 {
                                     type: "text",
-                                    text: `Email sent successfully with ID: ${response.data.id}`,
+                                    text: `Email sent successfully with ID: ${response.data.id}${threadingInfo}`,
                                 },
                             ],
                         };

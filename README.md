@@ -445,6 +445,104 @@ Creates a filter using pre-defined templates for common scenarios.
 }
 ```
 
+## Email Threading
+
+This server implements **RFC 2822 compliant email threading** to ensure replies are properly threaded in Gmail and all email clients.
+
+### How Email Threading Works
+
+When you reply to an email using the `threadId` parameter, the server:
+
+1. **Fetches the Message-ID header** from the most recent message in the thread
+2. **Builds a References chain** containing all Message-IDs in the conversation
+3. **Adds proper RFC 2822 headers** to your reply:
+   - `In-Reply-To`: The Message-ID you're replying to
+   - `References`: Space-separated chain of all Message-IDs in the thread
+4. **Automatically adds "Re:" prefix** to the subject line (if not already present)
+
+This ensures your replies appear properly threaded in all email clients, not just Gmail.
+
+### Replying to Emails
+
+To reply to an email, provide the `threadId` parameter when sending:
+
+```json
+{
+  "to": ["recipient@example.com"],
+  "subject": "Re: Project Discussion",
+  "body": "Thanks for the update. I agree with your approach.",
+  "threadId": "18a83604c1db1f45"
+}
+```
+
+**The server automatically:**
+- Fetches the Message-ID from the thread's most recent message
+- Constructs proper In-Reply-To and References headers
+- Ensures subject has "Re:" prefix (won't duplicate if already present)
+
+### Example: Multi-Message Thread
+
+```javascript
+// 1. Send initial email
+{
+  "to": ["colleague@example.com"],
+  "subject": "Project Proposal",
+  "body": "Here's my proposal for the project..."
+}
+// Response includes: threadId: "18a83604c1db1f45"
+
+// 2. Reply to thread
+{
+  "to": ["colleague@example.com"],
+  "subject": "Re: Project Proposal",  // Or omit - subject auto-inherited
+  "body": "Thanks! I have some questions...",
+  "threadId": "18a83604c1db1f45"
+}
+
+// 3. Continue the thread
+{
+  "to": ["colleague@example.com"],
+  "body": "To answer your questions...",
+  "threadId": "18a83604c1db1f45"  // Same thread ID
+}
+```
+
+All three messages will appear as a single conversation thread in Gmail and other email clients.
+
+### Technical Implementation
+
+The threading implementation follows:
+- **RFC 2822** email standards for In-Reply-To and References headers
+- **Gmail's 2019 threading policy** requiring both threadId AND proper headers
+- **Graceful degradation**: If threading headers can't be fetched, email still sends with threadId
+
+### Breaking Change Notice (v1.2.0)
+
+**REMOVED**: The `inReplyTo` parameter has been removed from `send_email` and `draft_email`.
+
+**Migration Guide:**
+- **Old approach** (no longer supported):
+  ```json
+  {
+    "to": ["recipient@example.com"],
+    "subject": "Re: Discussion",
+    "body": "Reply content",
+    "inReplyTo": "message-id-here"  // ❌ No longer accepted
+  }
+  ```
+
+- **New approach** (use threadId):
+  ```json
+  {
+    "to": ["recipient@example.com"],
+    "subject": "Re: Discussion",
+    "body": "Reply content",
+    "threadId": "18a83604c1db1f45"  // ✅ Correct
+  }
+  ```
+
+The old `inReplyTo` parameter was non-functional - it accepted Message-IDs but didn't implement proper threading. The new `threadId` approach provides true RFC 2822 compliant threading.
+
 ## Filter Management Features
 
 ### Filter Criteria

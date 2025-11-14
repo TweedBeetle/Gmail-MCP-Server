@@ -2,6 +2,7 @@ import fs from 'fs';
 import path from 'path';
 import { lookup as mimeLookup } from 'mime-types';
 import nodemailer from 'nodemailer';
+import { buildReferencesChain, ensureReplySubject } from './utils/threading.js';
 
 /**
  * Helper function to encode email headers containing non-ASCII characters
@@ -21,8 +22,18 @@ export const validateEmail = (email: string): boolean => {
     return emailRegex.test(email);
 };
 
-export function createEmailMessage(validatedArgs: any): string {
-    const encodedSubject = encodeEmailHeader(validatedArgs.subject);
+export function createEmailMessage(
+    validatedArgs: any,
+    replyToMessageId?: string,
+    existingReferences?: string
+): string {
+    // Handle reply subject prefix
+    let subject = validatedArgs.subject;
+    if (replyToMessageId) {
+        subject = ensureReplySubject(subject);
+    }
+
+    const encodedSubject = encodeEmailHeader(subject);
     // Determine content type based on available content and explicit mimeType
     let mimeType = validatedArgs.mimeType || 'text/plain';
     
@@ -49,9 +60,9 @@ export function createEmailMessage(validatedArgs: any): string {
         validatedArgs.cc ? `Cc: ${validatedArgs.cc.join(', ')}` : '',
         validatedArgs.bcc ? `Bcc: ${validatedArgs.bcc.join(', ')}` : '',
         `Subject: ${encodedSubject}`,
-        // Add thread-related headers if specified
-        validatedArgs.inReplyTo ? `In-Reply-To: ${validatedArgs.inReplyTo}` : '',
-        validatedArgs.inReplyTo ? `References: ${validatedArgs.inReplyTo}` : '',
+        // Add RFC 2822 threading headers if replying
+        replyToMessageId ? `In-Reply-To: ${replyToMessageId}` : '',
+        replyToMessageId ? `References: ${buildReferencesChain(replyToMessageId, existingReferences)}` : '',
         'MIME-Version: 1.0',
     ].filter(Boolean);
 
@@ -97,13 +108,23 @@ export function createEmailMessage(validatedArgs: any): string {
 }
 
 
-export async function createEmailWithNodemailer(validatedArgs: any): Promise<string> {
+export async function createEmailWithNodemailer(
+    validatedArgs: any,
+    replyToMessageId?: string,
+    existingReferences?: string
+): Promise<string> {
     // Validate email addresses
     (validatedArgs.to as string[]).forEach(email => {
         if (!validateEmail(email)) {
             throw new Error(`Recipient email address is invalid: ${email}`);
         }
     });
+
+    // Handle reply subject prefix
+    let subject = validatedArgs.subject;
+    if (replyToMessageId) {
+        subject = ensureReplySubject(subject);
+    }
 
     // Create a nodemailer transporter (we won't actually send, just generate the message)
     const transporter = nodemailer.createTransport({
@@ -118,9 +139,9 @@ export async function createEmailWithNodemailer(validatedArgs: any): Promise<str
         if (!fs.existsSync(filePath)) {
             throw new Error(`File does not exist: ${filePath}`);
         }
-        
+
         const fileName = path.basename(filePath);
-        
+
         attachments.push({
             filename: fileName,
             path: filePath
@@ -132,12 +153,13 @@ export async function createEmailWithNodemailer(validatedArgs: any): Promise<str
         to: validatedArgs.to.join(', '),
         cc: validatedArgs.cc?.join(', '),
         bcc: validatedArgs.bcc?.join(', '),
-        subject: validatedArgs.subject,
+        subject: subject,
         text: validatedArgs.body,
         html: validatedArgs.htmlBody,
         attachments: attachments,
-        inReplyTo: validatedArgs.inReplyTo,
-        references: validatedArgs.inReplyTo
+        // Add proper RFC 2822 threading headers
+        inReplyTo: replyToMessageId,
+        references: replyToMessageId ? buildReferencesChain(replyToMessageId, existingReferences) : undefined
     };
 
     // Generate the raw message
